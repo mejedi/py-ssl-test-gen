@@ -98,19 +98,26 @@ def ssl_pipe(c1, c2, tx_hook = default_tx_hook):
 
 def simple_ssl_conversation(client, server, messages):
 
+    driver_gt = None
+
     def conversation(conn, key):
-        conn.do_handshake()
-        for i, msg in enumerate(messages):
-            if i % 2 == key:
-                conn.sendall(msg)
-            else:
-                l = 0
-                while l != len(msg):
-                    block = conn.recv(len(msg))
-                    if not block:
-                        break
-                    l += len(block)
-        conn.shutdown()
+        try:
+            conn.do_handshake()
+            for i, msg in enumerate(messages):
+                if i % 2 == key:
+                    conn.sendall(msg)
+                else:
+                    l = 0
+                    while l != len(msg):
+                        block = conn.recv(len(msg))
+                        if not block:
+                            break
+                        l += len(block)
+            conn.shutdown()
+        except:
+            assert driver_gt
+            driver_gt.kill(*sys.exc_info())
+            raise
 
     spawn = eventlet.greenthread.spawn
 
@@ -121,11 +128,12 @@ def simple_ssl_conversation(client, server, messages):
             t1.wait()
             t2.wait()
         except:
-            t1.kill()
-            t2.kill()
+            t1.cancel()
+            t2.cancel()
             raise
 
-    return spawn(driver)
+    driver_gt = spawn(driver)
+    return driver_gt
 
 
 class Simulation(object):
@@ -191,29 +199,26 @@ V4+QGpLb/hZMplNwZhBs5bcHzVJ81eKHe5OmqEOky4k21ISukFU+tqm5cQ+8ifGt
 
 if __name__ == '__main__':
 
+    import traceback
     import itertools
     from pprint import pprint
+
+    import eventlet.debug
+    eventlet.debug.hub_exceptions(False)
 
     # only suites using RSA-based key exchange listed;
     # there is some overlap between suites, that's fine since different
     # SSL/TLS versions apply cryptography differently
 
-    # Note: for some bizzare reasons PyOpenSSL exceptions don't properly
-    # propagate from greenthreads (GreenThread.wait() must re-raise but
-    # it doesn't).  For this reasons if something goes wrong we end up
-    # in a pretty bad state.
-    #
-    # Export-grade ciphers were causing problems.
-
     ssl_v3_0_suites = [
         'NULL-MD5',
         'NULL-SHA',
-        #'EXP-RC4-MD5',
+        'EXP-RC4-MD5',
         'RC4-MD5',
         'RC4-SHA',
-        #'EXP-RC2-CBC-MD5',
+        'EXP-RC2-CBC-MD5',
         'IDEA-CBC-SHA',
-        #'EXP-DES-CBC-SHA',
+        'EXP-DES-CBC-SHA',
         'DES-CBC-SHA',
         'DES-CBC3-SHA'
     ]
@@ -221,12 +226,12 @@ if __name__ == '__main__':
     tls_v1_0_suites = [
         'NULL-MD5',
         'NULL-SHA',
-        #'EXP-RC4-MD5',
+        'EXP-RC4-MD5',
         'RC4-MD5',
         'RC4-SHA',
-        #'EXP-RC2-CBC-MD5',
+        'EXP-RC2-CBC-MD5',
         'IDEA-CBC-SHA',
-        #'EXP-DES-CBC-SHA',
+        'EXP-DES-CBC-SHA',
         'DES-CBC-SHA',
         'DES-CBC3-SHA',
         'AES128-SHA',
@@ -269,29 +274,33 @@ if __name__ == '__main__':
     sim = Simulation('simulation.pcap')
 
     for i,(ver,opts,suite) in enumerate(all_regimens_flat):
-
         id_str = '{}/{}'.format(ver, suite)
-        print id_str
 
-        client_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
-        server_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
-        server_ssl_ctx.use_privatekey(sample_key)
-        server_ssl_ctx.use_certificate(sample_cert)
+        try:
+            client_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
+            server_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
+            server_ssl_ctx.use_privatekey(sample_key)
+            server_ssl_ctx.use_certificate(sample_cert)
 
-        server_ssl_ctx.set_cipher_list('ALL,COMPLEMENTOFALL')
-        client_ssl_ctx.set_cipher_list(suite)
+            server_ssl_ctx.set_cipher_list('ALL,COMPLEMENTOFALL,EXPORT')
+            client_ssl_ctx.set_cipher_list(suite)
 
-        for opt in opts:
-            client_ssl_ctx.set_options(opt)
+            for opt in opts:
+                client_ssl_ctx.set_options(opt)
 
-        client, server = sim.ssl_connection(
-            (client_ssl_ctx, '10.0.10.103:{}'.format(9999+i)),
-            (server_ssl_ctx, '10.0.10.1:443'))
+            client, server = sim.ssl_connection(
+                (client_ssl_ctx, '10.0.10.103:{}'.format(9999+i)),
+                (server_ssl_ctx, '10.0.10.1:443'))
 
-        simple_ssl_conversation(client, server, [
-            'GET /{} HTTP/1.1\r\nHost: example.org\r\n\r\n'.format(id_str),
-            'HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n']).wait()
-        
-        sim.close(client)
-        sim.close(server)
+            simple_ssl_conversation(client, server, [
+                'GET /{} HTTP/1.1\r\nHost: example.org\r\n\r\n'.format(id_str),
+                'HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n']).wait()
+ 
+            sim.close(client)
+            sim.close(server)
+
+            print id_str
+
+        except Exception as e:
+            sys.stderr.write(id_str + ': ' + ''.join(traceback.format_exception_only(type(e), e)))
 
