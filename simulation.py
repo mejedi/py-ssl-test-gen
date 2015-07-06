@@ -8,14 +8,17 @@ import pcapgen
 
 
 def default_tx_hook(c, data, mem = {}):
+    """Ssl_pipe helper (internals)"""
     sys.stdout.write('({}) {}\n'.format(mem.setdefault(c, len(mem)), repr(data)))
 
 
 def bio_read_dummy():
+    """Ssl_pipe helper (internals)"""
     raise SSL.WantReadError
 
 
 def patch_ssl_connection(conn, queues, tx_hook):
+    """Ssl_pipe helper (internals)"""
     rx_queue, tx_queue = queues
     rx_lock = eventlet.semaphore.Semaphore(1)
     tx_lock = eventlet.semaphore.Semaphore(1)
@@ -87,6 +90,16 @@ def patch_ssl_connection(conn, queues, tx_hook):
 
 
 def ssl_pipe(c1, c2, tx_hook = default_tx_hook):
+    """Stitches a pair of OpenSSL.SSL connection objects together; data
+       sent on c1 can be received on c2 and vice versa.
+
+       Ssl_pipe only establishes a transport; no SSL messages are
+       exchanged yet.
+
+       Connection objects are patched in such a way that blocking
+       methods on c1 and c2 can be called provided that c1 and c2 are
+       serviced in different green threads.
+    """
     c1.set_connect_state()
     c2.set_accept_state()
 
@@ -97,7 +110,12 @@ def ssl_pipe(c1, c2, tx_hook = default_tx_hook):
 
 
 def simple_ssl_conversation(client, server, messages):
+    """Performs a handshake and exchanges messages between a pair of
+       OpenSSL.SSL connections finally performing a shutdown.
 
+       Messages[0] originates from the client and messages[1] is the
+       server response, etc.
+    """
     driver_gt = None
 
     def conversation(conn, key):
@@ -109,7 +127,7 @@ def simple_ssl_conversation(client, server, messages):
                 else:
                     l = 0
                     while l != len(msg):
-                        block = conn.recv(len(msg))
+                        block = conn.recv(len(msg) - l)
                         if not block:
                             break
                         l += len(block)
@@ -137,30 +155,43 @@ def simple_ssl_conversation(client, server, messages):
 
 
 class Simulation(object):
-    def __init__(self, path):
-        self._pcapgen = pcapgen.open(path)
-        self._sockets = {}
-    def _tx_hook(self, ssl, data):
-        try:
-            self._sockets[ssl].send(data)
-        except KeyError:
-            pass
-    def close(self, ssl):
-        try:
-            self._sockets[ssl].close()
-            del self._sockets[ssl]
-        except KeyError:
-            pass
+    """The whole widget: """
+    def __init__(self, output_pcap_path):
+        """Init simulation; a pcap file is generated"""
+        self._pcapgen = pcapgen.open(output_pcap_path)
     def ssl_connection(self, client, server):
+        """Setup an SSL connection, all exchanged messages are saved in
+           the pcap file.
+        """
         client_ssl_ctx, client_addr = client
         server_ssl_ctx, server_addr = server
-        client_socket, server_socket = self._pcapgen.create_connection(client_addr, server_addr)
-        client_ssl = SSL.Connection(client_ssl_ctx)
-        server_ssl = SSL.Connection(server_ssl_ctx)
-        self._sockets[client_ssl] = client_socket
-        self._sockets[server_ssl] = server_socket
-        return ssl_pipe(client_ssl, server_ssl, self._tx_hook)
 
+        client_socket, server_socket = self._pcapgen.create_connection(
+            client_addr, server_addr)
+
+        def tx_hook(ssl, data):
+            if ssl == client_ssl:
+                client_socket.send(data)
+            elif ssl == server_ssl:
+                server_socket.send(data)
+
+        client_ssl, server_ssl = ssl_pipe(
+            SSL.Connection(client_ssl_ctx),
+            SSL.Connection(server_ssl_ctx),
+            tx_hook)
+
+        def wrap(bound_method, socket):
+            def wrapper(*args, **kv):
+                res = bound_method(*args, **kv)
+                socket.close()
+                return res
+            return wrapper
+
+        client_ssl.shutdown = wrap(client_ssl.shutdown, client_socket)
+        server_ssl.shutdown = wrap(server_ssl.shutdown, server_socket)
+
+        return client_ssl, server_ssl
+        
 
 sample_key = crypto.load_privatekey(crypto.FILETYPE_PEM,
 '''-----BEGIN RSA PRIVATE KEY-----
@@ -296,9 +327,6 @@ if __name__ == '__main__':
                 'GET /{} HTTP/1.1\r\nHost: example.org\r\n\r\n'.format(id_str),
                 'HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n']).wait()
  
-            sim.close(client)
-            sim.close(server)
-
             print id_str
 
         except Exception as e:
