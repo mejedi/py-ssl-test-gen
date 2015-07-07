@@ -109,18 +109,31 @@ def ssl_pipe(c1, c2, tx_hook = default_tx_hook):
         patch_ssl_connection(c2, (queues[1], queues[0]), tx_hook))
 
 
-def simple_ssl_conversation(client, server, messages):
+SSL_SESSION_KEY = 'SSL_SESSION'
+
+
+def simple_ssl_conversation(client, server, messages, out_attrs = None):
     """Performs a handshake and exchanges messages between a pair of
        OpenSSL.SSL connections finally performing a shutdown.
 
        Messages[0] originates from the client and messages[1] is the
        server response, etc.
+
+       If out_attrs is present, the following keys are set upon
+       conversation completion:
+
+       - out_attrs[SSL_SESSION_KEY]: client SSL session object, as
+         returned by OpenSSL.SSL connection object's .get_session()
+         method
+
     """
     driver_gt = None
 
     def conversation(conn, key):
         try:
             conn.do_handshake()
+            if key == 0 and out_attrs != None:
+                out_attrs[SSL_SESSION_KEY] = conn.get_session()
             for i, msg in enumerate(messages):
                 if i % 2 == key:
                     conn.sendall(msg)
