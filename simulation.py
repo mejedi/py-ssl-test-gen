@@ -155,19 +155,19 @@ def simple_ssl_conversation(client, server, messages):
 
 
 class Simulation(object):
-    """The whole widget: """
+    default_server_addr = '10.0.10.1:443'
+
     def __init__(self, output_pcap_path):
         """Init simulation; a pcap file is generated"""
         self._pcapgen = pcapgen.open(output_pcap_path)
-    def ssl_connection(self, client, server):
+        self._autoports = {}
+    def ssl_connection(self, client_ctx, server_ctx, client_addr='10.0.10.103:*', server_addr=default_server_addr):
         """Setup an SSL connection, all exchanged messages are saved in
            the pcap file.
         """
-        client_ssl_ctx, client_addr = client
-        server_ssl_ctx, server_addr = server
-
         client_socket, server_socket = self._pcapgen.create_connection(
-            client_addr, server_addr)
+            self._expand_autoport(client_addr),
+            self._expand_autoport(server_addr))
 
         def tx_hook(ssl, data):
             if ssl == client_ssl:
@@ -176,8 +176,8 @@ class Simulation(object):
                 server_socket.send(data)
 
         client_ssl, server_ssl = ssl_pipe(
-            SSL.Connection(client_ssl_ctx),
-            SSL.Connection(server_ssl_ctx),
+            SSL.Connection(client_ctx),
+            SSL.Connection(server_ctx),
             tx_hook)
 
         def wrap(bound_method, socket):
@@ -191,6 +191,13 @@ class Simulation(object):
         server_ssl.shutdown = wrap(server_ssl.shutdown, server_socket)
 
         return client_ssl, server_ssl
+    def _expand_autoport(self, addr):
+        if not addr.endswith(':*'):
+            return addr
+        host = addr[:len(addr)-2]
+        port = self._autoports.get(host, 49152)
+        self._autoports[host] = port + 1
+        return '{}:{}'.format(host, port)
         
 
 sample_key = crypto.load_privatekey(crypto.FILETYPE_PEM,
@@ -319,9 +326,7 @@ if __name__ == '__main__':
             for opt in opts:
                 client_ssl_ctx.set_options(opt)
 
-            client, server = sim.ssl_connection(
-                (client_ssl_ctx, '10.0.10.103:{}'.format(9999+i)),
-                (server_ssl_ctx, '10.0.10.1:443'))
+            client, server = sim.ssl_connection(client_ssl_ctx, server_ssl_ctx)
 
             simple_ssl_conversation(client, server, [
                 'GET /{} HTTP/1.1\r\nHost: example.org\r\n\r\n'.format(id_str),
