@@ -235,11 +235,75 @@ V4+QGpLb/hZMplNwZhBs5bcHzVJ81eKHe5OmqEOky4k21ISukFU+tqm5cQ+8ifGt
 -----END CERTIFICATE-----''')
 
 
-if __name__ == '__main__':
+SSLv2_0_PROTOCOL_VERSION = 'SSL2.0'
+SSLv3_0_PROTOCOL_VERSION = 'SSL3.0'
+TLSv1_0_PROTOCOL_VERSION = 'TLS1.0'
+TLSv1_1_PROTOCOL_VERSION = 'TLS1.1'
+TLSv1_2_PROTOCOL_VERSION = 'TLS1.2'
+
+
+def require_ssl_protocol_version(ctx, mode):
+    """Require the particular protocol version."""
+    for m,o in (
+        (SSLv2_0_PROTOCOL_VERSION, SSL.OP_NO_SSLv2),
+        (SSLv3_0_PROTOCOL_VERSION, SSL.OP_NO_SSLv3),
+        (TLSv1_0_PROTOCOL_VERSION, SSL.OP_NO_TLSv1),
+        (TLSv1_1_PROTOCOL_VERSION, SSL.OP_NO_TLSv1_1),
+        (TLSv1_2_PROTOCOL_VERSION, SSL.OP_NO_TLSv1_2)):
+
+        if mode == m:
+            assert(o)
+        else:
+            ctx.set_options(o)
+
+
+def http_conversation_with_label(label):
+    """Generate HTTP messages exchanged by a client and a server.
+       Includes the label in a message.
+
+       Intended use case: generating test cases. If the label shows in
+       the decrypted output it means success."""
+
+    return [
+        'GET /{} HTTP/1.1\r\nHost: example.org\r\n\r\n'.format(label),
+        'HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n'
+    ]
+
+
+def sim_protocol_version_and_cipher_suite(sim, ver, suite, private_key = sample_key, cert = sample_cert):
+    """Simulate SSL connection using the specified protocol [ver]sion
+       and cipher [suite]"""
 
     import traceback
-    import itertools
-    from pprint import pprint
+
+    label = '{}/{}'.format(ver, suite)
+
+    try:
+        client_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
+        server_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
+
+        server_ssl_ctx.use_privatekey(private_key)
+        server_ssl_ctx.use_certificate(cert)
+
+        require_ssl_protocol_version(client_ssl_ctx, ver)
+
+        server_ssl_ctx.set_cipher_list('ALL,COMPLEMENTOFALL,EXPORT')
+        client_ssl_ctx.set_cipher_list(suite)
+
+        client, server = sim.ssl_connection(client_ssl_ctx, server_ssl_ctx)
+
+        simple_ssl_conversation(
+            client,
+            server,
+            http_conversation_with_label(label)).wait()
+
+        print label
+
+    except Exception as e:
+        sys.stderr.write(label + ': ' + ''.join(traceback.format_exception_only(type(e), e)))
+
+
+if __name__ == '__main__':
 
     import eventlet.debug
     eventlet.debug.hub_exceptions(False)
@@ -286,54 +350,15 @@ if __name__ == '__main__':
         'AES256-GCM-SHA384'
     ]
 
-    def all_opts_but(opt):
-        assert opt
-        s = set((
-            SSL.OP_NO_SSLv2,
-            SSL.OP_NO_SSLv3,
-            SSL.OP_NO_TLSv1,
-            SSL.OP_NO_TLSv1_1,
-            SSL.OP_NO_TLSv1_2))
-        s.difference_update((opt,))
-        return s
-
     all_regimens = [
-        ('SSL3.0', all_opts_but(SSL.OP_NO_SSLv3), ssl_v3_0_suites),
-        ('TLS1.0', all_opts_but(SSL.OP_NO_TLSv1), tls_v1_0_suites),
-        ('TLS1.1', all_opts_but(SSL.OP_NO_TLSv1_1), tls_v1_1_suites),
-        ('TLS1.2', all_opts_but(SSL.OP_NO_TLSv1_2), tls_v1_2_suites),
+        (SSLv3_0_PROTOCOL_VERSION, ssl_v3_0_suites),
+        (TLSv1_0_PROTOCOL_VERSION, tls_v1_0_suites),
+        (TLSv1_1_PROTOCOL_VERSION, tls_v1_1_suites),
+        (TLSv1_2_PROTOCOL_VERSION, tls_v1_2_suites),
     ]
 
-    all_regimens_flat = list(
-        itertools.chain(
-            *(itertools.izip(itertools.cycle((ver,)), itertools.cycle((opts,)), suites)
-                for ver,opts,suites in all_regimens)))
-    
     sim = Simulation('simulation.pcap')
-
-    for i,(ver,opts,suite) in enumerate(all_regimens_flat):
-        id_str = '{}/{}'.format(ver, suite)
-
-        try:
-            client_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
-            server_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
-            server_ssl_ctx.use_privatekey(sample_key)
-            server_ssl_ctx.use_certificate(sample_cert)
-
-            server_ssl_ctx.set_cipher_list('ALL,COMPLEMENTOFALL,EXPORT')
-            client_ssl_ctx.set_cipher_list(suite)
-
-            for opt in opts:
-                client_ssl_ctx.set_options(opt)
-
-            client, server = sim.ssl_connection(client_ssl_ctx, server_ssl_ctx)
-
-            simple_ssl_conversation(client, server, [
-                'GET /{} HTTP/1.1\r\nHost: example.org\r\n\r\n'.format(id_str),
-                'HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n']).wait()
- 
-            print id_str
-
-        except Exception as e:
-            sys.stderr.write(id_str + ': ' + ''.join(traceback.format_exception_only(type(e), e)))
+    for ver, suites in all_regimens:
+        for suite in suites:
+            sim_protocol_version_and_cipher_suite(sim, ver, suite)
 
