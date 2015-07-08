@@ -112,28 +112,32 @@ def ssl_pipe(c1, c2, tx_hook = default_tx_hook):
 SSL_SESSION_KEY = 'SSL_SESSION'
 
 
-def simple_ssl_conversation(client, server, messages, out_attrs = None):
+def simple_ssl_conversation(client, server, messages):
     """Performs a handshake and exchanges messages between a pair of
        OpenSSL.SSL connections finally performing a shutdown.
 
        Messages[0] originates from the client and messages[1] is the
        server response, etc.
 
-       If out_attrs is present, the following keys are set upon
-       conversation completion:
+       Returns a dictionary with the following keys set:
 
-       - out_attrs[SSL_SESSION_KEY]: client SSL session object, as
-         returned by OpenSSL.SSL connection object's .get_session()
-         method
+       - [SSL_SESSION_KEY]: client SSL session object, as returned by
+         OpenSSL.SSL connection object's .get_session() method
 
     """
+    res = {}
+    schedule_simple_ssl_conversation(client, server, messages, res).wait()
+    return res
+
+
+def schedule_simple_ssl_conversation(client, server, messages, res = None):
     driver_gt = None
 
     def conversation(conn, key):
         try:
             conn.do_handshake()
-            if key == 0 and out_attrs != None:
-                out_attrs[SSL_SESSION_KEY] = conn.get_session()
+            if key == 0 and res != None:
+                res[SSL_SESSION_KEY] = conn.get_session()
             for i, msg in enumerate(messages):
                 if i % 2 == key:
                     conn.sendall(msg)
@@ -166,52 +170,6 @@ def simple_ssl_conversation(client, server, messages, out_attrs = None):
     driver_gt = spawn(driver)
     return driver_gt
 
-
-class Simulation(object):
-    default_server_addr = '10.0.10.1:443'
-
-    def __init__(self, output_pcap_path):
-        """Init simulation; a pcap file is generated"""
-        self._pcapgen = pcapgen.open(output_pcap_path)
-        self._autoports = {}
-    def ssl_connection(self, client_ctx, server_ctx, client_addr='10.0.10.103:*', server_addr=default_server_addr):
-        """Setup an SSL connection, all exchanged messages are saved in
-           the pcap file.
-        """
-        client_socket, server_socket = self._pcapgen.create_connection(
-            self._expand_autoport(client_addr),
-            self._expand_autoport(server_addr))
-
-        def tx_hook(ssl, data):
-            if ssl == client_ssl:
-                client_socket.send(data)
-            elif ssl == server_ssl:
-                server_socket.send(data)
-
-        client_ssl, server_ssl = ssl_pipe(
-            SSL.Connection(client_ctx),
-            SSL.Connection(server_ctx),
-            tx_hook)
-
-        def wrap(bound_method, socket):
-            def wrapper(*args, **kv):
-                res = bound_method(*args, **kv)
-                socket.close()
-                return res
-            return wrapper
-
-        client_ssl.shutdown = wrap(client_ssl.shutdown, client_socket)
-        server_ssl.shutdown = wrap(server_ssl.shutdown, server_socket)
-
-        return client_ssl, server_ssl
-    def _expand_autoport(self, addr):
-        if not addr.endswith(':*'):
-            return addr
-        host = addr[:len(addr)-2]
-        port = self._autoports.get(host, 49152)
-        self._autoports[host] = port + 1
-        return '{}:{}'.format(host, port)
-        
 
 sample_key = crypto.load_privatekey(crypto.FILETYPE_PEM,
 '''-----BEGIN RSA PRIVATE KEY-----
@@ -248,23 +206,79 @@ V4+QGpLb/hZMplNwZhBs5bcHzVJ81eKHe5OmqEOky4k21ISukFU+tqm5cQ+8ifGt
 -----END CERTIFICATE-----''')
 
 
-SSLv2_0_PROTOCOL_VERSION = 'SSL2.0'
-SSLv3_0_PROTOCOL_VERSION = 'SSL3.0'
-TLSv1_0_PROTOCOL_VERSION = 'TLS1.0'
-TLSv1_1_PROTOCOL_VERSION = 'TLS1.1'
-TLSv1_2_PROTOCOL_VERSION = 'TLS1.2'
+class Simulation(object):
+    default_server_addr = '10.0.10.1:443'
+    default_client_addr = '10.0.10.103:*'
+    default_certificate = sample_cert
+    default_private_key = sample_key
+
+    def __init__(self, output_pcap_path):
+        """Init simulation; a pcap file is generated"""
+        self._pcapgen = pcapgen.open(output_pcap_path)
+        self._autoports = {}
+    def ssl_connection(self, client_ctx, server_ctx, client_addr = None, server_addr = None):
+        """Setup an SSL connection, all exchanged messages are saved in
+           the pcap file.
+        """
+        client_socket, server_socket = self._pcapgen.create_connection(
+            self._expand_autoport(client_addr or self.default_client_addr),
+            self._expand_autoport(server_addr or self.default_server_addr))
+
+        def tx_hook(ssl, data):
+            if ssl == client_ssl:
+                client_socket.send(data)
+            elif ssl == server_ssl:
+                server_socket.send(data)
+
+        client_ssl, server_ssl = ssl_pipe(
+            SSL.Connection(client_ctx),
+            SSL.Connection(server_ctx),
+            tx_hook)
+
+        def wrap(bound_method, socket):
+            def wrapper(*args, **kv):
+                res = bound_method(*args, **kv)
+                socket.close()
+                return res
+            return wrapper
+
+        client_ssl.shutdown = wrap(client_ssl.shutdown, client_socket)
+        server_ssl.shutdown = wrap(server_ssl.shutdown, server_socket)
+
+        return client_ssl, server_ssl
+    def client_ssl_context(self, method = SSL.SSLv23_METHOD):
+        return SSL.Context(method)
+    def server_ssl_context(self, method = SSL.SSLv23_METHOD):
+        ctx = SSL.Context(method)
+        ctx.use_certificate(self.default_certificate)
+        ctx.use_privatekey(self.default_private_key)
+        return ctx
+    def _expand_autoport(self, addr):
+        if not addr.endswith(':*'):
+            return addr
+        host = addr[:len(addr)-2]
+        port = self._autoports.get(host, 49152)
+        self._autoports[host] = port + 1
+        return '{}:{}'.format(host, port)
 
 
-def require_ssl_protocol_version(ctx, mode):
+PROTO_SSLv2_0 = 'SSL2.0'
+PROTO_SSLv3_0 = 'SSL3.0'
+PROTO_TLSv1_0 = 'TLS1.0'
+PROTO_TLSv1_1 = 'TLS1.1'
+PROTO_TLSv1_2 = 'TLS1.2'
+
+
+def require_ssl_protocol_version(ctx, proto):
     """Require the particular protocol version."""
-    for m,o in (
-        (SSLv2_0_PROTOCOL_VERSION, SSL.OP_NO_SSLv2),
-        (SSLv3_0_PROTOCOL_VERSION, SSL.OP_NO_SSLv3),
-        (TLSv1_0_PROTOCOL_VERSION, SSL.OP_NO_TLSv1),
-        (TLSv1_1_PROTOCOL_VERSION, SSL.OP_NO_TLSv1_1),
-        (TLSv1_2_PROTOCOL_VERSION, SSL.OP_NO_TLSv1_2)):
+    for p,o in (
+        (PROTO_SSLv2_0, SSL.OP_NO_SSLv2),
+        (PROTO_SSLv3_0, SSL.OP_NO_SSLv3),
+        (PROTO_TLSv1_0, SSL.OP_NO_TLSv1),
+        (PROTO_TLSv1_1, SSL.OP_NO_TLSv1_1),
+        (PROTO_TLSv1_2, SSL.OP_NO_TLSv1_2)):
 
-        if mode == m:
+        if proto == p:
             assert(o)
         else:
             ctx.set_options(o)
@@ -283,7 +297,7 @@ def http_conversation_with_label(label):
     ]
 
 
-def sim_protocol_version_and_cipher_suite(sim, ver, suite, private_key = sample_key, cert = sample_cert):
+def sim_protocol_version_and_cipher_suite(sim, ver, suite):
     """Simulate SSL connection using the specified protocol [ver]sion
        and cipher [suite]"""
 
@@ -292,23 +306,19 @@ def sim_protocol_version_and_cipher_suite(sim, ver, suite, private_key = sample_
     label = '{}/{}'.format(ver, suite)
 
     try:
-        client_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
-        server_ssl_ctx = SSL.Context(SSL.SSLv23_METHOD)
+        client_ctx = sim.client_ssl_context()
+        server_ctx = sim.server_ssl_context()
 
-        server_ssl_ctx.use_privatekey(private_key)
-        server_ssl_ctx.use_certificate(cert)
+        require_ssl_protocol_version(client_ctx, ver)
+        server_ctx.set_cipher_list('ALL,COMPLEMENTOFALL,EXPORT')
+        client_ctx.set_cipher_list(suite)
 
-        require_ssl_protocol_version(client_ssl_ctx, ver)
-
-        server_ssl_ctx.set_cipher_list('ALL,COMPLEMENTOFALL,EXPORT')
-        client_ssl_ctx.set_cipher_list(suite)
-
-        client, server = sim.ssl_connection(client_ssl_ctx, server_ssl_ctx)
+        client, server = sim.ssl_connection(client_ctx, server_ctx)
 
         simple_ssl_conversation(
             client,
             server,
-            http_conversation_with_label(label)).wait()
+            http_conversation_with_label(label))
 
         print label
 
@@ -316,14 +326,9 @@ def sim_protocol_version_and_cipher_suite(sim, ver, suite, private_key = sample_
         sys.stderr.write(label + ': ' + ''.join(traceback.format_exception_only(type(e), e)))
 
 
-if __name__ == '__main__':
-
-    import eventlet.debug
-    eventlet.debug.hub_exceptions(False)
-
-    # only suites using RSA-based key exchange listed;
-    # there is some overlap between suites, that's fine since different
-    # SSL/TLS versions apply cryptography differently
+def sim_common_rsa_modes(sim):
+    """Simulate SSL connections using a varity of protocol versions and
+       cipher suites."""
 
     ssl_v3_0_suites = [
         'NULL-MD5',
@@ -364,14 +369,20 @@ if __name__ == '__main__':
     ]
 
     all_regimens = [
-        (SSLv3_0_PROTOCOL_VERSION, ssl_v3_0_suites),
-        (TLSv1_0_PROTOCOL_VERSION, tls_v1_0_suites),
-        (TLSv1_1_PROTOCOL_VERSION, tls_v1_1_suites),
-        (TLSv1_2_PROTOCOL_VERSION, tls_v1_2_suites),
+        (PROTO_SSLv3_0, ssl_v3_0_suites),
+        (PROTO_TLSv1_0, tls_v1_0_suites),
+        (PROTO_TLSv1_1, tls_v1_1_suites),
+        (PROTO_TLSv1_2, tls_v1_2_suites),
     ]
 
-    sim = Simulation('simulation.pcap')
     for ver, suites in all_regimens:
         for suite in suites:
             sim_protocol_version_and_cipher_suite(sim, ver, suite)
+
+
+if __name__ == '__main__':
+    import eventlet.debug
+    eventlet.debug.hub_exceptions(False)
+    sim = Simulation('simulation.pcap')
+    sim_common_rsa_modes(sim)
 
