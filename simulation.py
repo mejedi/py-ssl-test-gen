@@ -68,15 +68,16 @@ def patch_ssl_connection(conn, queues, tx_hook):
 
     def rx_wrap(bound_method):
         def wrapper(*args, **kv):
-            try:
-                res = bound_method(*args, **kv)
-                do_send()
-                return res
-            except SSL.WantReadError:
-                do_send()
-                do_recv()
-            except SSL.WantWriteError:
-                do_send()
+            while True:
+                try:
+                    res = bound_method(*args, **kv)
+                    do_send()
+                    return res
+                except SSL.WantReadError:
+                    do_send()
+                    do_recv()
+                except SSL.WantWriteError:
+                    do_send()
         return wrapper
 
     conn.do_handshake = tx_wrap(conn.do_handshake)
