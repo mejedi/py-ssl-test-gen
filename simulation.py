@@ -1,4 +1,5 @@
 import sys
+import itertools
 import eventlet.semaphore
 import eventlet.queue
 import eventlet.greenthread
@@ -132,15 +133,18 @@ def simple_ssl_conversation(client, server, messages):
 
 
 def schedule_simple_ssl_conversation(client, server, messages, res = None):
+    SEND = 1
+    RECV = 2
     driver_gt = None
 
-    def conversation(conn, key):
+    def conversation(conn, modes):
         try:
             conn.do_handshake()
-            if key == 0 and res != None:
+            is_client = (modes[0] == SEND)
+            if is_client and res != None:
                 res[SSL_SESSION_KEY] = conn.get_session()
-            for i, msg in enumerate(messages):
-                if i % 2 == key:
+            for mode, msg in zip(itertools.cycle(modes), messages):
+                if mode == SEND:
                     conn.sendall(msg)
                 else:
                     l = 0
@@ -158,8 +162,8 @@ def schedule_simple_ssl_conversation(client, server, messages, res = None):
     spawn = eventlet.greenthread.spawn
 
     def driver():
-        t1 = spawn(conversation, client, 0)
-        t2 = spawn(conversation, server, 1)
+        t1 = spawn(conversation, client, [SEND, RECV])
+        t2 = spawn(conversation, server, [RECV, SEND])
         try:
             t1.wait()
             t2.wait()
