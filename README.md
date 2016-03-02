@@ -14,7 +14,7 @@ Writing PCAP file using our own module, *pcapgen*. Pcapgen is implemented in C++
 
 ### Project Goals, etc.
 
-The author is responsible for maintaining and improving an SSL decoder in a network sniffer.
+The author was responsible for maintaining and improving an SSL decoder in a network sniffer.
 Numerous stock libraries implementing SSL/TLS clients and servers are available; unfortunately
 these libraries are of a little use since a sniffer isn't an active participant of a network
 connection. A sniffer must understand SSL protocol and it must decrypt both client and server
