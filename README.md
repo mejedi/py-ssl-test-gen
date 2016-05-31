@@ -1,12 +1,31 @@
 # Py-SSL-Test-Gen
 
-A tool to simulate SSL conversations generating a PCAP file.
+SSL/TLS conversation simulator. Generates a PCAP file.
 
-No data is ever sent over the network. Great control over client and server settings, entirely self-contained.
+It was used to generate test cases for a SSL decoder in a network sniffer.
+
+Example: 
+
+```Python
+# Simulating a SSL session using AES256-SHA256 suite.
+# Results are saved in example.pcap
+# Client sends the literal 'PING' string and the server responds with 'PONG'.
+import simulation as ssl_sim
+
+sim = ssl_sim.Simulation('example.pcap')
+
+client_ctx = sim.client_ssl_context()
+server_ctx = sim.server_ssl_context()
+client_ctx.set_cipher_list('AES256-SHA256')
+
+client, server = sim.ssl_connection(client_ctx, server_ctx) 
+sim.simple_ssl_conversation(client, server, ['PING', 'PONG'])
+```
+
 
 ### Implementation Notes
 
-Using stock OpenSSL server and client implementations via *PyOpenSSL* bindings. Server and client are hosted in the same process and connected through a memory buffer.
+Using stock OpenSSL server and client implementations via *PyOpenSSL* bindings. Server and client are hosted in the same process and are connected through a memory buffer.
 
 Server and client logic is implemented in *eventlet* coroutines.
 
